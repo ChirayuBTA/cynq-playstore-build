@@ -1,0 +1,874 @@
+import React, { useEffect, useState, useRef } from "react";
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  Image,
+  Alert,
+  ActivityIndicator,
+  StatusBar,
+  ScrollView,
+  StyleSheet,
+  Dimensions,
+  Platform,
+} from "react-native";
+import { useRouter } from "expo-router";
+import * as ImagePicker from "expo-image-picker";
+import * as Location from "expo-location";
+import { Ionicons } from "@expo/vector-icons";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { api } from "../../utils/api"; // Import API methods
+import { getAuthValue, getLocValue } from "@/utils/storage";
+import CustomHeader from "@/components/CustomHeader";
+import ViewShot from "react-native-view-shot";
+import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
+import { Calendar, MapPin } from "lucide-react-native";
+import LocationPermissionModal from "@/components/LocationPermissionButton";
+import * as Device from "expo-device";
+import * as Application from "expo-application";
+
+const { width } = Dimensions.get("window");
+const PREVIEW_SIZE = width / 2 - 32; // Smaller for preview
+
+const CreateScreen = () => {
+  const [name, setName] = useState<string>("");
+  const [phone, setPhone] = useState<string>("");
+  const [entryType, setEntryType] = useState<string>(""); // Changed to string instead of array
+  const [images, setImages] = useState<string[]>([]); // Original images
+  const [imageDetails, setImageDetails] = useState<
+    Array<{ width: number; height: number }>
+  >([]);
+  const [processedImages, setProcessedImages] = useState<string[]>([]); // Images with watermark
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [location, setLocation] = useState<{
+    latitude: number;
+    longitude: number;
+    name?: string;
+    street?: string;
+    district?: string;
+    region?: string;
+    subregion?: string;
+    country?: string;
+    area?: string;
+    city?: string;
+    postalCode?: string;
+    formattedAddress?: string;
+  } | null>(null);
+  const [timestamp, setTimestamp] = useState<string>("");
+  const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [locationPermissionGranted, setLocationPermissionGranted] =
+    useState(false);
+  const [locationModalVisible, setLocationModalVisible] = useState(false);
+  const [deviceIdentifier, setDeviceIdentifier] = useState<string>("");
+  const viewShotRefs = useRef<Array<ViewShot | null>>([]);
+
+  const [storageData, setStorageData] = useState<{
+    activityId: string;
+    activityLocId: string;
+    promoterId: string;
+    vendorId: string;
+    projectId: string;
+    brandId: string;
+  }>({
+    activityId: "",
+    activityLocId: "",
+    promoterId: "",
+    vendorId: "",
+    projectId: "",
+    brandId: "",
+  });
+
+  const router = useRouter();
+
+  // Set entry type - modified to handle string value
+  const toggleEntryType = (type: string) => {
+    setEntryType((prevType) => {
+      if (type === "order" && prevType === "signup") {
+        return "both";
+      } else if (type === "signup" && prevType === "order") {
+        return "both";
+      } else if (type === "order" && prevType === "both") {
+        return "signup";
+      } else if (type === "signup" && prevType === "both") {
+        return "order";
+      } else if (type === prevType) {
+        return ""; // Unselect if clicking the same one
+      } else {
+        return type;
+      }
+    });
+  };
+
+  // Check if a specific entry type is selected
+  const isEntryTypeSelected = (type: string): boolean => {
+    if (type === "order") {
+      return entryType === "order" || entryType === "both";
+    } else if (type === "signup") {
+      return entryType === "signup" || entryType === "both";
+    }
+    return false;
+  };
+  useEffect(() => {
+    console.log("entryType--", entryType);
+  }, [entryType]);
+
+  // Get a device identifier based on platform
+  const getDeviceIdentifier = async () => {
+    try {
+      let identifier = "";
+
+      if (Platform.OS === "android") {
+        // Use Android ID as a fallback (not the IMEI, but a stable device ID)
+        identifier = (await Application.getAndroidId()) || "";
+      } else if (Platform.OS === "ios") {
+        // Use identifierForVendor on iOS (this is not IMEI)
+        identifier = (await Application.getIosIdForVendorAsync()) || "";
+      }
+
+      if (identifier) {
+        console.log("Device identifier obtained:", identifier);
+        setDeviceIdentifier(identifier);
+        return identifier;
+      } else {
+        console.log("Could not get device identifier");
+        return "";
+      }
+    } catch (error) {
+      console.error("Error getting device identifier:", error);
+      return "";
+    }
+  };
+
+  // Get current location with OpenStreetMap Nominatim API for reverse geocoding
+  const getLocation = async () => {
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        // Alert.alert("Permission to access location was denied");
+        return;
+      }
+
+      setLocationPermissionGranted(true);
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Highest,
+      });
+
+      const locationData = {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+      };
+
+      // Use OpenStreetMap Nominatim API for reverse geocoding
+      try {
+        const url = `https://nominatim.openstreetmap.org/reverse?lat=${locationData.latitude}&lon=${locationData.longitude}&format=json`;
+
+        // Add a User-Agent header as required by Nominatim usage policy
+        const response = await fetch(url, {
+          headers: {
+            "User-Agent": "YourAppName/1.0", // Replace with your actual app name
+          },
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+
+        const osmData = await response.json();
+        console.log("OSM data:", osmData); // For debugging
+
+        // Extract address information from OSM data
+        const addressInfo = osmData.address || {};
+
+        setLocation({
+          ...locationData,
+          // Store detailed address components from OSM
+          name: osmData.name || "",
+          street: addressInfo.road || "",
+          district: addressInfo.suburb || addressInfo.city_district || "",
+          subregion: addressInfo.county || "",
+          city:
+            addressInfo.city || addressInfo.town || addressInfo.village || "",
+          region: addressInfo.state || "",
+          country: addressInfo.country || "",
+          postalCode: addressInfo.postcode || "",
+          formattedAddress: osmData.display_name || "",
+          // For convenience, keep area as a summary field
+          area:
+            addressInfo.suburb ||
+            addressInfo.city_district ||
+            addressInfo.neighbourhood ||
+            addressInfo.county ||
+            "",
+        });
+      } catch (geoError) {
+        console.error("Error in reverse geocoding:", geoError);
+        setLocation(locationData); // Fall back to just coordinates
+      }
+    } catch (error) {
+      console.error("Error getting location:", error);
+      Alert.alert("Error", "Failed to get location data");
+    }
+  };
+
+  const updateTimestamp = () => {
+    const now = new Date();
+    setTimestamp(now.toLocaleString());
+  };
+
+  useEffect(() => {
+    fetchAuthData();
+    getLocation();
+    updateTimestamp();
+    getDeviceIdentifier();
+  }, []);
+
+  const fetchAuthData = async () => {
+    const activityId = await getLocValue("activityId");
+    const activityLocId = await getLocValue("activityLocId");
+    const projectId = await getAuthValue("projectId");
+    const vendorId = await getAuthValue("vendorId");
+    const promoterId = await getAuthValue("promoterId");
+    const brandId = await getAuthValue("brandId");
+
+    setStorageData({
+      activityId: activityId,
+      activityLocId: activityLocId,
+      promoterId: promoterId,
+      vendorId: vendorId,
+      projectId: projectId,
+      brandId: brandId,
+    });
+  };
+
+  // Get image dimensions for proper rendering
+  const getImageDimensions = async (uri: string) => {
+    return new Promise<{ width: number; height: number }>((resolve) => {
+      Image.getSize(
+        uri,
+        (width, height) => {
+          resolve({ width, height });
+        },
+        () => {
+          // Default fallback dimensions if image size can't be determined
+          resolve({ width: 1000, height: 1000 });
+        }
+      );
+    });
+  };
+
+  // Format location information with detailed address components from OSM
+  const getLocationString = () => {
+    if (!location) return "Getting location...";
+
+    // Use the formatted display_name from OSM if available
+    if (location.formattedAddress) {
+      return location.formattedAddress;
+    }
+
+    // Create array of address components from most specific to most general
+    const addressComponents = [];
+
+    // Add specific address components if available
+    if (location.name) addressComponents.push(location.name);
+    if (location.street) addressComponents.push(location.street);
+    if (location.district) addressComponents.push(location.district);
+    if (location.city) addressComponents.push(location.city);
+    if (location.region && location.region !== location.city)
+      addressComponents.push(location.region);
+    if (location.country) addressComponents.push(location.country);
+
+    const formattedAddress =
+      addressComponents.length > 0
+        ? addressComponents.join(", ")
+        : "Unknown location";
+
+    return formattedAddress;
+  };
+
+  // Alternative processing function that adds watermarks directly
+  const processImage = async (imageUri: string) => {
+    // Simply return the original image without processing
+    return imageUri;
+  };
+
+  // Process all images sequentially
+  const processAllImages = async () => {
+    // Simply return the original images
+    return images;
+  };
+
+  // Handle Image Selection from gallery
+  const pickImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      alert("Permission to access gallery is required.");
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      allowsEditing: false,
+      quality: 1, // Maximum quality
+      allowsMultipleSelection: true,
+      selectionLimit: 3,
+      base64: false, // Don't use base64 encoding which can reduce quality
+      exif: false, // Don't need EXIF data
+    });
+
+    if (!result.canceled && result.assets.length > 0) {
+      // Check if adding these images would exceed our limit
+      const totalImages = images.length + result.assets.length;
+      if (totalImages > 3) {
+        Alert.alert(
+          "Too many images",
+          "You can only have a maximum of 3 images."
+        );
+        // Add as many as we can within the limit
+        const remainingSlots = 3 - images.length;
+        if (remainingSlots > 0) {
+          const newImages = result.assets
+            .slice(0, remainingSlots)
+            .map((asset) => asset.uri);
+
+          // Get dimensions for each new image
+          const details = await Promise.all(
+            newImages.map((uri) => getImageDimensions(uri))
+          );
+
+          setImages((prev) => [...prev, ...newImages]);
+          setImageDetails((prev) => [...prev, ...details]);
+
+          // Update viewShotRefs array size
+          viewShotRefs.current = Array(images.length + newImages.length).fill(
+            null
+          );
+
+          // Refresh location data for the new images
+          getLocation();
+          updateTimestamp();
+        }
+      } else {
+        // Add all selected images
+        const newImages = result.assets.map((asset) => asset.uri);
+
+        // Get dimensions for each new image
+        const details = await Promise.all(
+          newImages.map((uri) => getImageDimensions(uri))
+        );
+
+        setImages((prev) => [...prev, ...newImages]);
+        setImageDetails((prev) => [...prev, ...details]);
+
+        // Update viewShotRefs array size
+        viewShotRefs.current = Array(images.length + newImages.length).fill(
+          null
+        );
+
+        // Refresh location data for the new images
+        getLocation();
+        updateTimestamp();
+      }
+    }
+  };
+
+  // Handle Taking a Picture with camera
+  const takePhoto = async () => {
+    if (images.length >= 3) {
+      Alert.alert("Maximum Images", "You can only upload up to 3 images.");
+      return;
+    }
+
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      alert("Camera permission is required to take photos.");
+      return;
+    }
+
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: false,
+      quality: 1, // Maximum quality
+      base64: false, // Don't use base64 encoding
+      exif: false, // Don't need EXIF data
+    });
+
+    if (!result.canceled && result.assets.length > 0) {
+      const newImageUri = result.assets[0].uri;
+
+      // Get dimensions for the new image
+      const dimensions = await getImageDimensions(newImageUri);
+
+      setImages((prev) => [...prev, newImageUri]);
+      setImageDetails((prev) => [...prev, dimensions]);
+
+      // Update viewShotRefs array size
+      viewShotRefs.current = Array(images.length + 1).fill(null);
+
+      // Update location and timestamp for the new photo
+      getLocation();
+      updateTimestamp();
+    }
+  };
+
+  // Remove image from collection
+  const removeImage = (index: number) => {
+    setImages((prev) => prev.filter((_, i) => i !== index));
+    setImageDetails((prev) => prev.filter((_, i) => i !== index));
+    setProcessedImages((prev) => prev.filter((_, i) => i !== index));
+    // Update viewShotRefs array size
+    viewShotRefs.current = viewShotRefs.current.filter((_, i) => i !== index);
+  };
+
+  // Handle Submit
+  const handleSubmit = async () => {
+    if (images.length === 0) {
+      return Alert.alert("Error", "Please upload at least one image.");
+    }
+
+    // Check if an entry type is selected - modified for string value
+    if (entryType === "") {
+      return Alert.alert("Error", "Please select at least one entry type.");
+    }
+
+    setIsLoading(true);
+
+    try {
+      // Use original images instead of watermarked ones
+      const imagesToUpload = images;
+
+      const formData = new FormData();
+
+      // Append original images to form data
+      imagesToUpload.forEach((uri, index) => {
+        formData.append("images", {
+          uri,
+          name: `photo_${Date.now()}_${index}.jpg`,
+          type: "image/jpeg",
+        } as any);
+      });
+
+      // Add the rest of the form data
+      Object.entries({
+        promoterId: storageData.promoterId,
+        projectId: storageData.projectId,
+        activityLocId: storageData.activityLocId,
+        vendorId: storageData.vendorId,
+        activityId: storageData.activityId,
+        brandId: storageData.brandId,
+      }).forEach(([key, value]) => formData.append(key, value));
+
+      name && formData.append("name", name);
+      phone && formData.append("phone", phone);
+
+      // Add entry type data to formData - changed to use string value
+      formData.append("entryType", entryType);
+
+      // Add location data to formData
+      if (location) {
+        formData.append("latitude", location.latitude.toString());
+        formData.append("longitude", location.longitude.toString());
+
+        // Use getLocationString() to get the formatted address
+        const formattedAddress = getLocationString();
+        formData.append("location", formattedAddress);
+      }
+
+      if (Device.manufacturer && Device.modelName) {
+        const deviceInfo = `${Device.manufacturer}, ${Device.modelName} (${deviceIdentifier})`;
+
+        formData.append("deviceInfo", deviceInfo);
+      }
+
+      // Send to backend
+      const response = await api.createOrderEntry(formData);
+
+      if (response.success) {
+        Alert.alert("Success", "Images uploaded successfully!");
+        router.replace("/dashboard");
+      } else {
+        Alert.alert("Error", response.message || "Failed to upload images.");
+      }
+    } catch (error) {
+      console.error("Upload Error:", error);
+      Alert.alert(
+        "Error",
+        error instanceof Error ? error.message : "Failed to upload images."
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  // Add this to handle location data when permission is granted
+  const handleLocationGranted = (locationData: any) => {
+    setLocationPermissionGranted(true);
+    updateTimestamp();
+  };
+
+  return (
+    <SafeAreaView className="flex-1 bg-gray-100">
+      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
+
+      <CustomHeader />
+
+      {!locationPermissionGranted ? (
+        <>
+          <LocationPermissionModal
+            visible={locationModalVisible}
+            onRequestClose={() => setLocationModalVisible(false)}
+            onLocationGranted={handleLocationGranted}
+          />
+        </>
+      ) : (
+        <ScrollView
+          contentContainerStyle={{ paddingBottom: 24 }}
+          showsVerticalScrollIndicator={false}
+        >
+          <View className="bg-white mx-4 my-4 rounded-3xl shadow-md p-6">
+            <View className="mx-4 my-4 rounded-3xl p-6">
+              <Text className="text-2xl font-bold text-center text-primary mb-6">
+                Create New Entry
+              </Text>
+
+              {/* Name Input */}
+              <Text className="text-sm font-medium text-gray-700 mb-2">
+                Name
+              </Text>
+              <TextInput
+                className="w-full bg-white border border-gray-300 rounded-xl px-4 py-3 mb-4 text-lg text-black"
+                placeholder="Enter name"
+                value={name}
+                onChangeText={setName}
+              />
+
+              {/* Phone Input */}
+              <Text className="text-sm font-medium text-gray-700 mb-2">
+                Phone
+              </Text>
+              <TextInput
+                className="w-full bg-white border border-gray-300 rounded-xl px-4 py-3 mb-4 text-lg text-black"
+                placeholder="Enter phone number"
+                maxLength={10}
+                keyboardType="phone-pad"
+                value={phone}
+                onChangeText={(text) => setPhone(text.replace(/[^0-9]/g, ""))}
+              />
+
+              {/* Entry Type Checkboxes - modified for string value */}
+              <Text className="text-sm font-medium text-gray-700 mb-2">
+                Entry Type <Text className="text-primary">*</Text>
+              </Text>
+              <View className="flex-row mb-6 items-center">
+                {/* Order Checkbox */}
+                <TouchableOpacity
+                  onPress={() => toggleEntryType("order")}
+                  className="flex-row items-center mr-8"
+                >
+                  <View
+                    className={`w-5 h-5 border rounded ${
+                      isEntryTypeSelected("order")
+                        ? "bg-primary border-primary"
+                        : "border-gray-400"
+                    } mr-2 justify-center items-center`}
+                  >
+                    {isEntryTypeSelected("order") && (
+                      <Ionicons name="checkmark" size={16} color="#FFF" />
+                    )}
+                  </View>
+                  <Text className="text-gray-800">Order</Text>
+                </TouchableOpacity>
+
+                {/* Signup Checkbox */}
+                <TouchableOpacity
+                  onPress={() => toggleEntryType("signup")}
+                  className="flex-row items-center"
+                >
+                  <View
+                    className={`w-5 h-5 border rounded ${
+                      isEntryTypeSelected("signup")
+                        ? "bg-primary border-primary"
+                        : "border-gray-400"
+                    } mr-2 justify-center items-center`}
+                  >
+                    {isEntryTypeSelected("signup") && (
+                      <Ionicons name="checkmark" size={16} color="#FFF" />
+                    )}
+                  </View>
+                  <Text className="text-gray-800">Signup</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Image Upload */}
+              <Text className="text-sm font-medium text-gray-700 mb-2">
+                Images <Text className="text-primary">*</Text>
+                <Text className="text-xs text-gray-500"> (Max 3)</Text>
+              </Text>
+              <View className="flex-row gap-4 space-x-4 mb-4">
+                {/* Select from Gallery */}
+                <TouchableOpacity
+                  onPress={pickImage}
+                  className="flex-1 items-center justify-center bg-white border border-gray-300 rounded-xl p-4 shadow-sm"
+                  disabled={images.length >= 3}
+                >
+                  <Ionicons
+                    name="image"
+                    size={24}
+                    color={images.length >= 3 ? "#ccc" : "#f89f22"}
+                  />
+                  <Text
+                    className={`text-sm ${
+                      images.length >= 3 ? "text-gray-400" : "text-gray-600"
+                    } mt-2`}
+                  >
+                    Select Photos
+                  </Text>
+                </TouchableOpacity>
+
+                {/* Take a Photo */}
+                <TouchableOpacity
+                  onPress={takePhoto}
+                  className="flex-1 items-center justify-center bg-white border border-gray-300 rounded-xl p-4 shadow-sm"
+                  disabled={images.length >= 3}
+                >
+                  <Ionicons
+                    name="camera"
+                    size={24}
+                    color={images.length >= 3 ? "#ccc" : "#f89f22"}
+                  />
+                  <Text
+                    className={`text-sm ${
+                      images.length >= 3 ? "text-gray-400" : "text-gray-600"
+                    } mt-2`}
+                  >
+                    Take Photo
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Images Preview with Watermark - modified to remove watermark */}
+              {images.length > 0 && (
+                <View className="mb-8">
+                  <Text className="text-base font-semibold text-gray-800 mb-4">
+                    Preview
+                  </Text>
+
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={{ paddingHorizontal: 16 }}
+                    className="mb-4"
+                  >
+                    {images.map((image, index) => {
+                      const imgDetails = imageDetails[index] || {
+                        width: 1,
+                        height: 1,
+                      };
+                      const aspectRatio = imgDetails.width / imgDetails.height;
+                      const previewHeight = PREVIEW_SIZE / aspectRatio;
+
+                      return (
+                        <View
+                          key={index}
+                          className="relative mr-4"
+                          style={{ width: PREVIEW_SIZE }}
+                        >
+                          {/* Simple Image Preview - removed ViewShot wrapper */}
+                          <View
+                            style={[
+                              styles.imageContainer,
+                              {
+                                borderRadius: 16,
+                                overflow: "hidden",
+                                shadowColor: "#000",
+                                shadowOpacity: 0.1,
+                                shadowRadius: 6,
+                                shadowOffset: { width: 0, height: 3 },
+                                elevation: 4,
+                              },
+                            ]}
+                          >
+                            {/* Image */}
+                            <Image
+                              source={{ uri: image }}
+                              style={{
+                                width: PREVIEW_SIZE,
+                                height: previewHeight,
+                              }}
+                              resizeMode="cover"
+                            />
+                          </View>
+
+                          {/* Remove Button (floating) */}
+                          <TouchableOpacity
+                            onPress={() => removeImage(index)}
+                            className="absolute top-2 right-2 bg-white rounded-full p-1"
+                            style={{
+                              shadowColor: "#000",
+                              shadowOpacity: 0.2,
+                              shadowRadius: 4,
+                              elevation: 3,
+                            }}
+                          >
+                            <Ionicons
+                              name="close-circle"
+                              size={22}
+                              color="#FF4040"
+                            />
+                          </TouchableOpacity>
+
+                          {/* Image Number Badge */}
+                          <View className="absolute bottom-2 left-2 bg-[#f89f22] px-2 py-1 rounded-full">
+                            <Text className="text-xs text-white font-bold">
+                              {index + 1}
+                            </Text>
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </ScrollView>
+
+                  {/* Pagination Dots */}
+                  {images.length > 1 && (
+                    <View className="flex-row justify-center items-center">
+                      {images.map((_, index) => (
+                        <View
+                          key={index}
+                          className="h-2 w-2 rounded-full mx-1"
+                          style={{
+                            backgroundColor: "#f89f22", // You can track selected index if you want dynamic active dot
+                          }}
+                        />
+                      ))}
+                    </View>
+                  )}
+                </View>
+              )}
+
+              {/* Submit Button - modified to check string value */}
+              <TouchableOpacity
+                onPress={handleSubmit}
+                disabled={
+                  isLoading ||
+                  images.length === 0 ||
+                  isProcessing ||
+                  entryType === "" // Changed to check for empty string
+                }
+                className={`w-full py-4 rounded-xl ${
+                  images.length > 0 &&
+                  entryType !== "" && // Changed to check for empty string
+                  !isLoading &&
+                  !isProcessing
+                    ? "bg-primary"
+                    : "bg-gray-300"
+                } items-center shadow-md`}
+              >
+                {isLoading || isProcessing ? (
+                  <View className="flex-row items-center">
+                    <ActivityIndicator color="#fff" />
+                    <Text className="text-white text-lg font-semibold ml-2">
+                      {isProcessing ? "Processing Images..." : "Submitting..."}
+                    </Text>
+                  </View>
+                ) : (
+                  <Text className="text-white text-lg font-semibold">
+                    Submit
+                  </Text>
+                )}
+              </TouchableOpacity>
+
+              {/* Cancel Button */}
+              <TouchableOpacity
+                onPress={() => router.back()}
+                className="w-full py-4 rounded-xl bg-white border border-gray-300 items-center mt-4 shadow-sm"
+              >
+                <Text className="text-gray-700 text-lg font-medium">
+                  Cancel
+                </Text>
+              </TouchableOpacity>
+              {/* <TouchableOpacity
+                onPress={getDeviceIdentifier}
+                className="w-full py-4 rounded-xl bg-white border border-gray-300 items-center mt-4 shadow-sm"
+              >
+                <Text className="text-gray-700 text-lg font-medium">
+                  Get IMEI
+                </Text>
+              </TouchableOpacity>
+              {deviceIdentifier && (
+                <Text className="text-base font-semibold text-gray-800 mb-4">
+                  {deviceIdentifier}
+                </Text>
+              )} */}
+            </View>
+          </View>
+        </ScrollView>
+      )}
+    </SafeAreaView>
+  );
+};
+
+const styles = StyleSheet.create({
+  viewShotContainer: {
+    overflow: "hidden",
+    width: PREVIEW_SIZE,
+  },
+  imageWrapper: {
+    width: "100%",
+    overflow: "hidden",
+  },
+  watermarkFooter: {
+    width: "100%",
+    backgroundColor: "rgba(0,0,0,0.5)",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  watermarkText: {
+    color: "white",
+    fontSize: 5,
+    fontWeight: "bold",
+    marginLeft: 6, // adds space between icon and text
+  },
+  watermarkRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 4,
+  },
+  removeButton: {
+    position: "absolute",
+    top: 4,
+    right: 4,
+    backgroundColor: "rgba(239, 68, 68, 1)",
+    borderRadius: 12,
+    padding: 4,
+    zIndex: 10,
+  },
+  imageContainer: {
+    borderRadius: 12,
+    overflow: "hidden",
+    backgroundColor: "white",
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  imageNumberBadge: {
+    position: "absolute",
+    top: 8,
+    left: 8,
+    backgroundColor: "#f89f22",
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 10,
+  },
+  imageNumberText: {
+    color: "white",
+    fontSize: 12,
+    fontWeight: "bold",
+  },
+});
+
+export default CreateScreen;
