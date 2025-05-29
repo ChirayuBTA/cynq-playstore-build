@@ -61,6 +61,10 @@ const CreateScreen = () => {
     useState(false);
   const [locationModalVisible, setLocationModalVisible] = useState(false);
   const [deviceIdentifier, setDeviceIdentifier] = useState<string>("");
+
+  // Add new state to track image processing
+  const [imagesReady, setImagesReady] = useState<boolean>(true);
+
   const viewShotRefs = useRef<Array<ViewShot | null>>([]);
 
   const [storageData, setStorageData] = useState<{
@@ -109,6 +113,7 @@ const CreateScreen = () => {
     }
     return false;
   };
+
   useEffect(() => {
     console.log("entryType--", entryType);
   }, [entryType]);
@@ -242,14 +247,17 @@ const CreateScreen = () => {
   };
 
   // Get image dimensions for proper rendering
-  const getImageDimensions = async (uri: string) => {
+  const getImageDimensions = async (
+    uri: string
+  ): Promise<{ width: number; height: number }> => {
     return new Promise<{ width: number; height: number }>((resolve) => {
       Image.getSize(
         uri,
         (width, height) => {
           resolve({ width, height });
         },
-        () => {
+        (error) => {
+          console.warn("Failed to get image dimensions:", error);
           // Default fallback dimensions if image size can't be determined
           resolve({ width: 1000, height: 1000 });
         }
@@ -298,6 +306,42 @@ const CreateScreen = () => {
     return images;
   };
 
+  // Modified image processing function with proper state management
+  const processImages = async (newImages: string[]) => {
+    setImagesReady(false);
+    setIsProcessing(true);
+
+    try {
+      // Get dimensions for each new image
+      const details = await Promise.all(
+        newImages.map(async (uri) => {
+          try {
+            return await getImageDimensions(uri);
+          } catch (error) {
+            console.warn("Error getting dimensions for image:", uri, error);
+            return { width: 1000, height: 1000 }; // fallback
+          }
+        })
+      );
+
+      // Update state in a single batch
+      setImageDetails((prev) => [...prev, ...details]);
+
+      // Update viewShotRefs array size
+      viewShotRefs.current = Array(images.length + newImages.length).fill(null);
+
+      // Refresh location data and timestamp
+      await getLocation();
+      updateTimestamp();
+    } catch (error) {
+      console.error("Error processing images:", error);
+      Alert.alert("Error", "Failed to process images. Please try again.");
+    } finally {
+      setIsProcessing(false);
+      setImagesReady(true);
+    }
+  };
+
   // Handle Image Selection from gallery
   const pickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -330,43 +374,21 @@ const CreateScreen = () => {
             .slice(0, remainingSlots)
             .map((asset) => asset.uri);
 
-          // Get dimensions for each new image
-          const details = await Promise.all(
-            newImages.map((uri) => getImageDimensions(uri))
-          );
-
+          // Update images state first
           setImages((prev) => [...prev, ...newImages]);
-          setImageDetails((prev) => [...prev, ...details]);
 
-          // Update viewShotRefs array size
-          viewShotRefs.current = Array(images.length + newImages.length).fill(
-            null
-          );
-
-          // Refresh location data for the new images
-          getLocation();
-          updateTimestamp();
+          // Process images asynchronously
+          await processImages(newImages);
         }
       } else {
         // Add all selected images
         const newImages = result.assets.map((asset) => asset.uri);
 
-        // Get dimensions for each new image
-        const details = await Promise.all(
-          newImages.map((uri) => getImageDimensions(uri))
-        );
-
+        // Update images state first
         setImages((prev) => [...prev, ...newImages]);
-        setImageDetails((prev) => [...prev, ...details]);
 
-        // Update viewShotRefs array size
-        viewShotRefs.current = Array(images.length + newImages.length).fill(
-          null
-        );
-
-        // Refresh location data for the new images
-        getLocation();
-        updateTimestamp();
+        // Process images asynchronously
+        await processImages(newImages);
       }
     }
   };
@@ -394,18 +416,11 @@ const CreateScreen = () => {
     if (!result.canceled && result.assets.length > 0) {
       const newImageUri = result.assets[0].uri;
 
-      // Get dimensions for the new image
-      const dimensions = await getImageDimensions(newImageUri);
-
+      // Update images state first
       setImages((prev) => [...prev, newImageUri]);
-      setImageDetails((prev) => [...prev, dimensions]);
 
-      // Update viewShotRefs array size
-      viewShotRefs.current = Array(images.length + 1).fill(null);
-
-      // Update location and timestamp for the new photo
-      getLocation();
-      updateTimestamp();
+      // Process the single image
+      await processImages([newImageUri]);
     }
   };
 
@@ -418,48 +433,98 @@ const CreateScreen = () => {
     viewShotRefs.current = viewShotRefs.current.filter((_, i) => i !== index);
   };
 
-  // Handle Submit
-  const handleSubmit = async () => {
+  // Add validation function
+  const validateSubmission = () => {
     if (images.length === 0) {
-      return Alert.alert("Error", "Please upload at least one image.");
+      Alert.alert("Error", "Please upload at least one image.");
+      return false;
     }
 
-    // Check if an entry type is selected - modified for string value
     if (entryType === "") {
-      return Alert.alert("Error", "Please select at least one entry type.");
+      Alert.alert("Error", "Please select at least one entry type.");
+      return false;
+    }
+
+    if (!imagesReady) {
+      Alert.alert(
+        "Please wait",
+        "Images are still being processed. Please wait a moment and try again."
+      );
+      return false;
+    }
+
+    // Check if all required storage data is available
+    const requiredFields = [
+      "promoterId",
+      "projectId",
+      "activityLocId",
+      "vendorId",
+      "activityId",
+      "brandId",
+    ] as const;
+    const missingFields = requiredFields.filter(
+      (field) => !storageData[field as keyof typeof storageData]
+    );
+
+    if (missingFields.length > 0) {
+      Alert.alert(
+        "Error",
+        `Missing required data: ${missingFields.join(", ")}. Please try again.`
+      );
+      return false;
+    }
+
+    return true;
+  };
+
+  // Handle Submit - with better error handling and validation
+  const handleSubmit = async () => {
+    if (!validateSubmission()) {
+      return;
     }
 
     setIsLoading(true);
 
     try {
+      // Add a small delay to ensure all state updates are complete
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
       // Use original images instead of watermarked ones
       const imagesToUpload = images;
 
       const formData = new FormData();
 
-      // Append original images to form data
+      // Append original images to form data with better error handling
       imagesToUpload.forEach((uri, index) => {
-        formData.append("images", {
-          uri,
-          name: `photo_${Date.now()}_${index}.jpg`,
-          type: "image/jpeg",
-        } as any);
+        if (uri && typeof uri === "string") {
+          formData.append("images", {
+            uri,
+            name: `photo_${Date.now()}_${index}.jpg`,
+            type: "image/jpeg",
+          } as any);
+        }
       });
 
-      // Add the rest of the form data
-      Object.entries({
+      // Add the rest of the form data with validation
+      const formDataEntries = {
         promoterId: storageData.promoterId,
         projectId: storageData.projectId,
         activityLocId: storageData.activityLocId,
         vendorId: storageData.vendorId,
         activityId: storageData.activityId,
         brandId: storageData.brandId,
-      }).forEach(([key, value]) => formData.append(key, value));
+      };
+
+      Object.entries(formDataEntries).forEach(([key, value]) => {
+        if (value) {
+          formData.append(key, value);
+        }
+      });
 
       name && formData.append("name", name);
       phone && formData.append("phone", phone);
 
-      // Add entry type data to formData - changed to use string value
+      // Add entry type data to formData
       formData.append("entryType", entryType);
 
       // Add location data to formData
@@ -467,19 +532,23 @@ const CreateScreen = () => {
         formData.append("latitude", location.latitude.toString());
         formData.append("longitude", location.longitude.toString());
 
-        // Use getLocationString() to get the formatted address
         const formattedAddress = getLocationString();
         formData.append("location", formattedAddress);
       }
 
       if (Device.manufacturer && Device.modelName) {
         const deviceInfo = `${Device.manufacturer}, ${Device.modelName} (${deviceIdentifier})`;
-
         formData.append("deviceInfo", deviceInfo);
       }
 
-      // Send to backend
-      const response = await api.createOrderEntry(formData);
+      // Send to backend with timeout
+      console.log("Submitting form data...");
+      const response = await Promise.race([
+        api.createOrderEntry(formData),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Request timeout")), 30000)
+        ),
+      ]);
 
       if (response.success) {
         Alert.alert("Success", "Images uploaded successfully!");
@@ -489,18 +558,41 @@ const CreateScreen = () => {
       }
     } catch (error) {
       console.error("Upload Error:", error);
-      Alert.alert(
-        "Error",
-        error instanceof Error ? error.message : "Failed to upload images."
-      );
+
+      let errorMessage = "Failed to upload images.";
+
+      if (error instanceof Error) {
+        if (error.message.includes("Network request failed")) {
+          errorMessage =
+            "Network error. Please check your internet connection and try again.";
+        } else if (error.message.includes("timeout")) {
+          errorMessage = "Request timed out. Please try again.";
+        } else {
+          errorMessage = error.message;
+        }
+      }
+
+      Alert.alert("Error", errorMessage);
     } finally {
       setIsLoading(false);
     }
   };
+
   // Add this to handle location data when permission is granted
   const handleLocationGranted = (locationData: any) => {
     setLocationPermissionGranted(true);
     updateTimestamp();
+  };
+
+  // Check if submit should be disabled
+  const isSubmitDisabled = () => {
+    return (
+      isLoading ||
+      images.length === 0 ||
+      isProcessing ||
+      entryType === "" ||
+      !imagesReady
+    );
   };
 
   return (
@@ -552,7 +644,7 @@ const CreateScreen = () => {
                 onChangeText={(text) => setPhone(text.replace(/[^0-9]/g, ""))}
               />
 
-              {/* Entry Type Checkboxes - modified for string value */}
+              {/* Entry Type Checkboxes */}
               <Text className="text-sm font-medium text-gray-700 mb-2">
                 Entry Type <Text className="text-primary">*</Text>
               </Text>
@@ -606,19 +698,23 @@ const CreateScreen = () => {
                 <TouchableOpacity
                   onPress={pickImage}
                   className="flex-1 items-center justify-center bg-white border border-gray-300 rounded-xl p-4 shadow-sm"
-                  disabled={images.length >= 3}
+                  disabled={images.length >= 3 || isProcessing}
                 >
                   <Ionicons
                     name="image"
                     size={24}
-                    color={images.length >= 3 ? "#ccc" : "#f89f22"}
+                    color={
+                      images.length >= 3 || isProcessing ? "#ccc" : "#f89f22"
+                    }
                   />
                   <Text
                     className={`text-sm ${
-                      images.length >= 3 ? "text-gray-400" : "text-gray-600"
+                      images.length >= 3 || isProcessing
+                        ? "text-gray-400"
+                        : "text-gray-600"
                     } mt-2`}
                   >
-                    Select Photos
+                    {isProcessing ? "Processing..." : "Select Photos"}
                   </Text>
                 </TouchableOpacity>
 
@@ -626,24 +722,38 @@ const CreateScreen = () => {
                 <TouchableOpacity
                   onPress={takePhoto}
                   className="flex-1 items-center justify-center bg-white border border-gray-300 rounded-xl p-4 shadow-sm"
-                  disabled={images.length >= 3}
+                  disabled={images.length >= 3 || isProcessing}
                 >
                   <Ionicons
                     name="camera"
                     size={24}
-                    color={images.length >= 3 ? "#ccc" : "#f89f22"}
+                    color={
+                      images.length >= 3 || isProcessing ? "#ccc" : "#f89f22"
+                    }
                   />
                   <Text
                     className={`text-sm ${
-                      images.length >= 3 ? "text-gray-400" : "text-gray-600"
+                      images.length >= 3 || isProcessing
+                        ? "text-gray-400"
+                        : "text-gray-600"
                     } mt-2`}
                   >
-                    Take Photo
+                    {isProcessing ? "Processing..." : "Take Photo"}
                   </Text>
                 </TouchableOpacity>
               </View>
 
-              {/* Images Preview with Watermark - modified to remove watermark */}
+              {/* Show processing indicator */}
+              {/* {isProcessing && (
+                <View className="flex-row items-center justify-center mb-4">
+                  <ActivityIndicator color="#f89f22" />
+                  <Text className="ml-2 text-gray-600">
+                    Processing images...
+                  </Text>
+                </View>
+              )} */}
+
+              {/* Images Preview */}
               {images.length > 0 && (
                 <View className="mb-8">
                   <Text className="text-base font-semibold text-gray-800 mb-4">
@@ -670,7 +780,6 @@ const CreateScreen = () => {
                           className="relative mr-4"
                           style={{ width: PREVIEW_SIZE }}
                         >
-                          {/* Simple Image Preview - removed ViewShot wrapper */}
                           <View
                             style={[
                               styles.imageContainer,
@@ -733,7 +842,7 @@ const CreateScreen = () => {
                           key={index}
                           className="h-2 w-2 rounded-full mx-1"
                           style={{
-                            backgroundColor: "#f89f22", // You can track selected index if you want dynamic active dot
+                            backgroundColor: "#f89f22",
                           }}
                         />
                       ))}
@@ -742,22 +851,12 @@ const CreateScreen = () => {
                 </View>
               )}
 
-              {/* Submit Button - modified to check string value */}
+              {/* Submit Button */}
               <TouchableOpacity
                 onPress={handleSubmit}
-                disabled={
-                  isLoading ||
-                  images.length === 0 ||
-                  isProcessing ||
-                  entryType === "" // Changed to check for empty string
-                }
+                disabled={isSubmitDisabled()}
                 className={`w-full py-4 rounded-xl ${
-                  images.length > 0 &&
-                  entryType !== "" && // Changed to check for empty string
-                  !isLoading &&
-                  !isProcessing
-                    ? "bg-primary"
-                    : "bg-gray-300"
+                  !isSubmitDisabled() ? "bg-primary" : "bg-gray-300"
                 } items-center shadow-md`}
               >
                 {isLoading || isProcessing ? (
@@ -783,19 +882,6 @@ const CreateScreen = () => {
                   Cancel
                 </Text>
               </TouchableOpacity>
-              {/* <TouchableOpacity
-                onPress={getDeviceIdentifier}
-                className="w-full py-4 rounded-xl bg-white border border-gray-300 items-center mt-4 shadow-sm"
-              >
-                <Text className="text-gray-700 text-lg font-medium">
-                  Get IMEI
-                </Text>
-              </TouchableOpacity>
-              {deviceIdentifier && (
-                <Text className="text-base font-semibold text-gray-800 mb-4">
-                  {deviceIdentifier}
-                </Text>
-              )} */}
             </View>
           </View>
         </ScrollView>

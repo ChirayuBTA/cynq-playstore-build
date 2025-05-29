@@ -27,12 +27,11 @@ const UploadImages = () => {
 
   const fetchActivityId = async () => {
     const activityLocId = await getLocValue("activityLocId");
-
     setActivityLocId(activityLocId);
   };
+
   const fetchPromoterId = async () => {
     const storedPromoterId = await getAuthValue("promoterId");
-
     setPromoterId(storedPromoterId);
   };
 
@@ -50,8 +49,7 @@ const UploadImages = () => {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      // mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsMultipleSelection: true, // Enable multiple selection
+      allowsMultipleSelection: true,
       allowsEditing: false,
       quality: 0.7,
     });
@@ -80,45 +78,147 @@ const UploadImages = () => {
     }
   };
 
-  // Handle submit (uploads images)
-  const handleSubmit = () => {
+  // Validate image URI
+  const validateImageUri = (uri: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      Image.getSize(
+        uri,
+        () => resolve(true),
+        () => resolve(false)
+      );
+    });
+  };
+
+  // Handle submit (uploads images) - FIXED VERSION
+  const handleSubmit = async () => {
     if (!images.length) {
       Alert.alert("Error", "Please upload at least one image.");
       return;
     }
 
-    setIsLoading(true);
-    const formData = new FormData();
+    if (!activityLocId || !promoterId) {
+      Alert.alert("Error", "Missing required data. Please try again.");
+      return;
+    }
 
-    Promise.all(
-      images.map((uri, index) =>
-        Promise.resolve().then(() => {
-          formData.append("images", {
-            uri,
-            name: `photo_${Date.now()}_${index}.jpg`,
-            type: "image/jpeg",
-          } as any);
-        })
-      )
-    )
-      .then(() => {
-        formData.append("activityLocId", activityLocId);
-        formData.append("promoterId", promoterId);
-        return api.uploadImages(formData);
-      })
-      .then(({ success, message }) => {
-        if (success) {
-          Alert.alert("Success", "Images uploaded successfully!");
-          router.replace("/dashboard");
-        } else {
-          Alert.alert("Error", message || "Failed to upload images.");
+    setIsLoading(true);
+
+    try {
+      // Validate all images first
+      const imageValidations = await Promise.all(
+        images.map((uri) => validateImageUri(uri))
+      );
+
+      const invalidImages = imageValidations.some((isValid) => !isValid);
+      if (invalidImages) {
+        Alert.alert("Error", "Some images are invalid. Please try again.");
+        setIsLoading(false);
+        return;
+      }
+
+      // Create FormData properly
+      const formData = new FormData();
+
+      // Append images one by one
+      images.forEach((uri, index) => {
+        formData.append("images", {
+          uri,
+          name: `photo_${Date.now()}_${index}.jpg`,
+          type: "image/jpeg",
+        } as any);
+      });
+
+      // Append other data
+      formData.append("activityLocId", activityLocId);
+      formData.append("promoterId", promoterId);
+
+      // Add a small delay to ensure FormData is properly constructed
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      const { success, message } = await api.uploadImages(formData);
+
+      if (success) {
+        Alert.alert("Success", "Images uploaded successfully!");
+        router.replace("/dashboard");
+      } else {
+        Alert.alert("Error", message || "Failed to upload images.");
+      }
+    } catch (error) {
+      console.error("Upload Error:", error);
+      Alert.alert(
+        "Error",
+        (error instanceof Error && error.message) || "Something went wrong."
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Alternative handleSubmit with retry mechanism
+  const handleSubmitWithRetry = async (retryCount = 0) => {
+    if (!images.length) {
+      Alert.alert("Error", "Please upload at least one image.");
+      return;
+    }
+
+    if (!activityLocId || !promoterId) {
+      Alert.alert("Error", "Missing required data. Please try again.");
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      const formData = new FormData();
+
+      // Use a more robust way to create FormData
+      for (let i = 0; i < images.length; i++) {
+        const uri = images[i];
+
+        // Validate image exists
+        const isValid = await validateImageUri(uri);
+        if (!isValid) {
+          throw new Error(`Image ${i + 1} is not valid`);
         }
-      })
-      .catch((error) => {
-        // console.error("Upload Error:", error);
-        Alert.alert("Error", error.message || "Something went wrong.");
-      })
-      .finally(() => setIsLoading(false));
+
+        formData.append("images", {
+          uri,
+          name: `photo_${Date.now()}_${i}.jpg`,
+          type: "image/jpeg",
+        } as any);
+      }
+
+      formData.append("activityLocId", activityLocId);
+      formData.append("promoterId", promoterId);
+
+      const { success, message } = await api.uploadImages(formData);
+
+      if (success) {
+        Alert.alert("Success", "Images uploaded successfully!");
+        router.replace("/dashboard");
+      } else {
+        Alert.alert("Error", message || "Failed to upload images.");
+      }
+    } catch (error) {
+      console.error("Upload Error:", error);
+
+      // Retry once if it's a network error and first attempt
+      if (
+        retryCount === 0 &&
+        error instanceof Error &&
+        error.message?.includes("Network request failed")
+      ) {
+        console.log("Retrying upload...");
+        setTimeout(() => handleSubmitWithRetry(1), 1000);
+        return;
+      }
+
+      Alert.alert(
+        "Error",
+        (error instanceof Error && error.message) || "Something went wrong."
+      );
+      setIsLoading(false);
+    }
   };
 
   // Remove selected image
@@ -176,7 +276,6 @@ const UploadImages = () => {
                   source={{ uri }}
                   className="w-32 h-32 rounded-xl border border-gray-300"
                 />
-                {/* Cross icon to remove image */}
                 <TouchableOpacity
                   onPress={() => removeImage(uri)}
                   className="absolute top-0 right-0 bg-white p-1 rounded-full"
@@ -189,7 +288,7 @@ const UploadImages = () => {
 
           {/* Submit Button */}
           <TouchableOpacity
-            onPress={handleSubmit}
+            onPress={handleSubmit} // Use handleSubmitWithRetry for retry mechanism
             disabled={isLoading}
             className={`w-full py-4 rounded-xl ${
               images.length > 0 ? "bg-primary" : "bg-gray-300"

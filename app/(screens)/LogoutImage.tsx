@@ -19,6 +19,7 @@ import { clearAuthData, clearLocData, getAuthValue } from "@/utils/storage";
 const LogoutImage = () => {
   const [image, setImage] = useState<string>("");
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isImageReady, setIsImageReady] = useState<boolean>(false); // Track image readiness
   const [promoterId, setPromoterId] = useState("");
   const [loginImageId, setLoginImageId] = useState("");
 
@@ -43,6 +44,7 @@ const LogoutImage = () => {
       return;
     }
 
+    setIsImageReady(false); // Reset image readiness
     const result = await ImagePicker.launchCameraAsync({
       allowsEditing: false,
       quality: 0.7,
@@ -50,55 +52,132 @@ const LogoutImage = () => {
     });
 
     if (!result.canceled && result.assets.length > 0) {
-      setImage(result.assets[0].uri);
+      const imageUri = result.assets[0].uri;
+      setImage(imageUri);
+
+      // Add a small delay to ensure the image is ready
+      setTimeout(() => {
+        setIsImageReady(true);
+      }, 500);
     }
   };
 
-  // Handle submit (uploads image)
+  // Validate image before upload
+  const validateImage = async (uri: string): Promise<boolean> => {
+    try {
+      return new Promise((resolve) => {
+        Image.getSize(
+          uri,
+          (width, height) => {
+            // Image is valid if we can get its dimensions
+            resolve(width > 0 && height > 0);
+          },
+          () => {
+            // Image is invalid
+            resolve(false);
+          }
+        );
+      });
+    } catch {
+      return false;
+    }
+  };
+
+  // Handle submit with proper error handling and retries
   const handleSubmit = async () => {
     if (!image) {
       Alert.alert("Error", "Please take a logout Image.");
       return;
     }
 
+    if (!isImageReady) {
+      Alert.alert(
+        "Please Wait",
+        "Image is still processing. Please wait a moment and try again."
+      );
+      return;
+    }
+
     setIsLoading(true);
-    const formData = new FormData();
 
-    formData.append("image", {
-      uri: image,
-      name: `logout_photo_${Date.now()}.jpg`,
-      type: "image/jpeg",
-    } as any);
+    try {
+      // Validate image before upload
+      const isValid = await validateImage(image);
+      if (!isValid) {
+        Alert.alert("Error", "Invalid image. Please take a new photo.");
+        setIsLoading(false);
+        return;
+      }
 
-    formData.append("promoterId", promoterId);
-    formData.append("id", loginImageId);
-    // formData.append("type", "logout");
+      const formData = new FormData();
 
-    api
-      .logoutImage(formData)
-      .then(async ({ success, message }) => {
-        if (success) {
-          Alert.alert("Success", "Logout Image uploaded successfully!");
-          await clearLocData();
-          await clearAuthData();
-          router.replace("/");
-        } else {
-          Alert.alert("Error", message || "Failed to upload Logout Image.");
+      // Use proper file structure for FormData
+      const imageFile = {
+        uri: image,
+        name: `logout_photo_${Date.now()}.jpg`,
+        type: "image/jpeg",
+      };
+
+      formData.append("image", imageFile as any);
+      formData.append("promoterId", promoterId);
+      formData.append("id", loginImageId);
+
+      // Upload with retry mechanism
+      const uploadWithRetry = async (retries = 2): Promise<any> => {
+        try {
+          return await api.logoutImage(formData);
+        } catch (error) {
+          if (
+            retries > 0 &&
+            error instanceof Error &&
+            error.message?.includes("Network request failed")
+          ) {
+            console.log(`Retrying upload... ${retries} attempts left`);
+            await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait 1 second
+            return await uploadWithRetry(retries - 1);
+          }
+          throw error;
         }
-      })
-      .catch((error) => {
-        Alert.alert("Error", error.message || "Something went wrong.");
-      })
-      .finally(() => setIsLoading(false));
-    console.log("Uploaded Logout Image");
-    // await clearLocData();
-    // await clearAuthData();
-    // router.replace("/");
+      };
+
+      const { success, message } = await uploadWithRetry();
+
+      if (success) {
+        Alert.alert("Success", "Logout Image uploaded successfully!");
+        await clearLocData();
+        await clearAuthData();
+        router.replace("/");
+      } else {
+        Alert.alert("Error", message || "Failed to upload Logout Image.");
+      }
+    } catch (error) {
+      console.error("Upload error:", error);
+      Alert.alert(
+        "Error",
+        (error instanceof Error && error.message) ||
+          "Something went wrong. Please try again."
+      );
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Remove selected image
   const removeImage = () => {
     setImage("");
+    setIsImageReady(false);
+  };
+
+  // Handle image load success
+  const onImageLoad = () => {
+    setIsImageReady(true);
+  };
+
+  // Handle image load error
+  const onImageError = () => {
+    Alert.alert("Error", "Failed to load image. Please take a new photo.");
+    setImage("");
+    setIsImageReady(false);
   };
 
   return (
@@ -122,7 +201,16 @@ const LogoutImage = () => {
                 <Image
                   source={{ uri: image }}
                   className="w-64 h-64 rounded-xl border border-gray-300"
+                  onLoad={onImageLoad}
+                  onError={onImageError}
                 />
+                {/* Loading indicator while image is processing */}
+                {!isImageReady && (
+                  <View className="absolute inset-0 bg-black bg-opacity-50 rounded-xl items-center justify-center">
+                    <ActivityIndicator color="#fff" size="large" />
+                    <Text className="text-white mt-2">Processing...</Text>
+                  </View>
+                )}
                 {/* Cross icon to remove image */}
                 <TouchableOpacity
                   onPress={removeImage}
@@ -153,15 +241,22 @@ const LogoutImage = () => {
           {/* Submit Button */}
           <TouchableOpacity
             onPress={handleSubmit}
-            disabled={isLoading || !image}
+            disabled={isLoading || !image || !isImageReady}
             className={`w-full py-4 rounded-xl ${
-              image ? "bg-primary" : "bg-gray-300"
+              image && isImageReady ? "bg-primary" : "bg-gray-300"
             } items-center shadow-md`}
           >
             {isLoading ? (
-              <ActivityIndicator color="#fff" />
+              <View className="flex-row items-center">
+                <ActivityIndicator color="#fff" />
+                <Text className="text-white text-lg font-semibold ml-2">
+                  Uploading...
+                </Text>
+              </View>
             ) : (
-              <Text className="text-white text-lg font-semibold">Submit</Text>
+              <Text className="text-white text-lg font-semibold">
+                {!isImageReady && image ? "Processing Image..." : "Submit"}
+              </Text>
             )}
           </TouchableOpacity>
 
