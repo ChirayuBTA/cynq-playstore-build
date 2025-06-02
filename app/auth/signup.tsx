@@ -1,22 +1,21 @@
 // app/auth/signup.tsx
+import { api } from "@/utils/api";
+import { Ionicons } from "@expo/vector-icons";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
+  ActivityIndicator,
   Alert,
+  Image,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   StatusBar,
-  ActivityIndicator,
-  Image,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
-import { useRouter, useLocalSearchParams } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
-import { api } from "@/utils/api";
-import { storeAuthData } from "@/utils/storage";
 
 const SignupScreen = () => {
   const { phoneNumber } = useLocalSearchParams();
@@ -285,6 +284,7 @@ const SignupScreen = () => {
           <View className="flex-row justify-center mt-10 mb-6">
             <View className="flex-row items-center space-x-2">
               <View className="h-2 w-8 rounded-full bg-primary" />
+              <View className="h-2 w-8 rounded-full bg-gray-300" />
               <View className="h-2 w-8 rounded-full bg-gray-300" />
             </View>
           </View>
