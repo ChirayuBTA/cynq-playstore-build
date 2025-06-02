@@ -1,12 +1,12 @@
 {
   "expo": {
     "name": "CYNQ",
-    "slug": "cynq-bwz8cr1ze6pdznhcqu3bh",
+    "slug": "cynq",
     "owner": "brandtouch",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/appIconLight.png",
-    "scheme": "cynqbwz8cr1ze6pdznhcqu3bh",
+    "scheme": "myapp",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
@@ -57,14 +57,14 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "2d1064d4-6dbf-491a-92e7-9448f63e6d93"
+        "projectId": "f4689342-2c59-480c-bbae-9f86ae427ace"
       }
     },
     "runtimeVersion": {
       "policy": "appVersion"
     },
     "updates": {
-      "url": "https://u.expo.dev/2d1064d4-6dbf-491a-92e7-9448f63e6d93"
+      "url": "https://u.expo.dev/f4689342-2c59-480c-bbae-9f86ae427ace"
     }
   }
 }
