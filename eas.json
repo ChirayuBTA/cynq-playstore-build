@@ -25,7 +25,12 @@
     },
     "production": {
       "autoIncrement": true,
-      "channel": "production"
+      "channel": "production",
+      "android": {
+        "env": {
+          "ANDROID_HOME": "/Users/admin/Library/Android/sdk"
+        }
+      }
     }
   },
   "submit": {
